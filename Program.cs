@@ -9,6 +9,12 @@ var builder = WebApplication.CreateBuilder(args);
 var keyVaultUri = builder.Configuration["KeyVault:VaultUri"];
 builder.Configuration.AddAzureKeyVault(new Uri(keyVaultUri), new DefaultAzureCredential());
 
+// Add Application Insights
+builder.Services.AddApplicationInsightsTelemetry(options =>
+{
+    options.ConnectionString = builder.Configuration["ApplicationInsights:ConnectionString"];
+});
+
 // Add services to the container and configure authentication using MicrosoftIdentityWebApi
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddMicrosoftIdentityWebApi(options =>
