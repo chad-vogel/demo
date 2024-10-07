@@ -1,8 +1,13 @@
+using Azure.Identity;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Identity.Web;
 using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Add Azure Key Vault integration
+var keyVaultUri = builder.Configuration["KeyVault:VaultUri"];
+builder.Configuration.AddAzureKeyVault(new Uri(keyVaultUri), new DefaultAzureCredential());
 
 // Add services to the container and configure authentication using MicrosoftIdentityWebApi
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
