@@ -1,0 +1,47 @@
+app.MapGet("/count/compare", async (ICountComparisonService countComparisonService) =>
+{
+    try
+    {
+        var isSuccessful = await countComparisonService.CompareCountsAsync();
+        if (isSuccessful)
+        {
+            return Results.Ok(new { Success = true, Message = "Counts match!" });
+        }
+        else
+        {
+            return Results.Ok(new { Success = false, Message = "Counts do not match." });
+        }
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { Success = false, Error = ex.Message });
+    }
+});
+
+// Other service registration (e.g., ICountComparisonService)
+app.Run();
+
+
+@page
+@model StatusPageModel
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Status Check</title>
+</head>
+<body>
+    <h1>Status Check</h1>
+
+    <button id="checkStatusBtn">Check Status</button>
+    <p id="statusResult"></p>
+
+    <script>
+        document.getElementById('checkStatusBtn').addEventListener('click', async () => {
+            const response = await fetch('/count/compare');
+            const result = await response.json();
+            document.getElementById('statusResult').textContent = result.Message;
+        });
+    </script>
+</body>
+</html>
