@@ -5,9 +5,7 @@ using Azure.Security.KeyVault.Secrets;
 using Microsoft.ApplicationInsights;
 using Microsoft.ApplicationInsights.Extensibility;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
-using Microsoft.Extensions.Logging;
 using Microsoft.Identity.Web;
 using Microsoft.IdentityModel.Tokens;
 using MongoDB.Driver;
@@ -25,7 +23,8 @@ builder.Services.AddApplicationInsightsTelemetry(options =>
 });
 
 // Set up TelemetryClient for custom metrics and events
-var telemetryClient = new TelemetryClient(builder.Services.BuildServiceProvider().GetRequiredService<TelemetryConfiguration>());
+var telemetryClient =
+    new TelemetryClient(builder.Services.BuildServiceProvider().GetRequiredService<TelemetryConfiguration>());
 
 // Determine if the application is running locally
 var isDevelopment = builder.Environment.IsDevelopment();
@@ -35,16 +34,16 @@ if (!isDevelopment)
     // Add Azure Key Vault integration only when not in local development
     var keyVaultUri = builder.Configuration["KeyVault:VaultUri"];
     builder.Configuration.AddAzureKeyVault(new Uri(keyVaultUri), new DefaultAzureCredential());
-    
+
     // Register the SecretClient for Azure Key Vault
     builder.Services.AddSingleton(new SecretClient(new Uri(keyVaultUri), new DefaultAzureCredential()));
 }
 
 // Register a keyed service to build the SQL connection string based on the environment
-builder.Services.AddSingleton<Func<Task<string>>>(async () =>
+builder.Services.AddKeyedSingleton<Func<Task<string>>>("SqlConnectionString", (sp, _) => async () =>
 {
-    var configuration = builder.Configuration;
-    var logger = builder.Services.BuildServiceProvider().GetRequiredService<ILogger<Program>>();
+    var configuration = sp.GetRequiredService<IConfiguration>();
+    var logger = sp.GetRequiredService<ILogger<Program>>();
 
     if (isDevelopment)
     {
@@ -52,40 +51,90 @@ builder.Services.AddSingleton<Func<Task<string>>>(async () =>
         telemetryClient.TrackEvent("UsingLocalSqlConfig");
         return configuration.GetConnectionString("BaseSqlConnectionString");
     }
-    else
+
+    logger.LogInformation("Retrieving SQL credentials from Azure Key Vault.");
+    telemetryClient.TrackEvent("UsingAzureKeyVaultForSql");
+    var secretClient = sp.GetRequiredService<SecretClient>();
+    var baseConnectionString = configuration.GetConnectionString("BaseSqlConnectionString");
+
+    var userIdSecret = await secretClient.GetSecretAsync("UserId");
+    var passwordSecret = await secretClient.GetSecretAsync("Password");
+
+    var userId = userIdSecret.Value;
+    var password = passwordSecret.Value;
+
+    var connectionStringBuilder = new SqlConnectionStringBuilder(baseConnectionString)
     {
-        logger.LogInformation("Retrieving SQL credentials from Azure Key Vault.");
-        telemetryClient.TrackEvent("UsingAzureKeyVaultForSql");
-        var secretClient = builder.Services.BuildServiceProvider().GetRequiredService<SecretClient>();
-        var baseConnectionString = configuration.GetConnectionString("BaseSqlConnectionString");
+        UserID = userId.Value,
+        Password = password.Value
+    };
 
-        var userIdSecret = await secretClient.GetSecretAsync("UserId");
-        var passwordSecret = await secretClient.GetSecretAsync("Password");
+    logger.LogInformation("SQL connection string successfully built.");
+    telemetryClient.TrackMetric("SqlConnectionStringBuilt", 1);
+    return connectionStringBuilder.ConnectionString;
+});
 
-        var userId = userIdSecret.Value;
-        var password = passwordSecret.Value;
+// Register a keyed service to build the MongoDB connection string based on the environment
+builder.Services.AddKeyedSingleton<Func<Task<string>>>("MongoConnectionString", (sp, _) => async () =>
+{
+    var configuration = sp.GetRequiredService<IConfiguration>();
+    var logger = sp.GetRequiredService<ILogger<Program>>();
 
-        var connectionStringBuilder = new SqlConnectionStringBuilder(baseConnectionString)
+    var baseConnectionString = configuration.GetConnectionString("MongoDbBaseConnectionString");
+    if (string.IsNullOrEmpty(baseConnectionString))
+    {
+        logger.LogError("MongoDB base connection string is not configured properly.");
+        throw new InvalidOperationException("MongoDB base connection string is missing.");
+    }
+
+    if (isDevelopment)
+    {
+        logger.LogInformation("Using local development configuration for MongoDB connection string.");
+        telemetryClient.TrackEvent("UsingLocalMongoConfig");
+        return baseConnectionString;
+    }
+
+    logger.LogInformation("Retrieving MongoDB credentials from Azure Key Vault.");
+    telemetryClient.TrackEvent("UsingAzureKeyVaultForMongo");
+    var secretClient = sp.GetRequiredService<SecretClient>();
+
+    try
+    {
+        var mongoUserSecret = await secretClient.GetSecretAsync("MongoUserId");
+        var mongoPasswordSecret = await secretClient.GetSecretAsync("MongoPassword");
+
+        var userId = mongoUserSecret?.Value?.ToString();
+        var password = mongoPasswordSecret?.Value?.ToString();
+
+        if (string.IsNullOrEmpty(userId) || string.IsNullOrEmpty(password))
         {
-            UserID = userId.Value,
-            Password = password.Value
-        };
+            logger.LogError("MongoDB credentials are missing in Key Vault.");
+            throw new InvalidOperationException("MongoDB credentials are missing.");
+        }
 
-        logger.LogInformation("SQL connection string successfully built.");
-        telemetryClient.TrackMetric("SqlConnectionStringBuilt", 1);
-        return connectionStringBuilder.ConnectionString;
+        var mongoConnectionString = $"{baseConnectionString}?authSource=admin&username={userId}&password={password}";
+        logger.LogInformation("MongoDB connection string successfully built.");
+        telemetryClient.TrackMetric("MongoConnectionStringBuilt", 1);
+
+        return mongoConnectionString;
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Failed to retrieve MongoDB credentials from Key Vault.");
+        telemetryClient.TrackException(ex);
+        throw new InvalidOperationException("Failed to build MongoDB connection string.", ex);
     }
 });
 
-// Register a keyed service for Func<Task<DbConnection>> to use the connection string
-builder.Services.AddSingleton<Func<Task<DbConnection>>>(async () =>
+// Register a keyed service for Func<Task<DbConnection>> to use the SQL connection string
+builder.Services.AddKeyedSingleton<Func<Task<DbConnection>>>("SqlDbConnection", (sp, _) => async () =>
 {
-    var logger = builder.Services.BuildServiceProvider().GetRequiredService<ILogger<Program>>();
+    var logger = sp.GetRequiredService<ILogger<Program>>();
     logger.LogInformation("Establishing SQL database connection...");
-    
+
     try
     {
-        var connectionStringFunc = builder.Services.BuildServiceProvider().GetRequiredService<Func<Task<string>>>();
+        var connectionStringFunc = sp.GetKeyedService<Func<Task<string>>>("SqlConnectionString");
         var connectionString = await connectionStringFunc();
         var connection = new SqlConnection(connectionString);
 
@@ -103,12 +152,13 @@ builder.Services.AddSingleton<Func<Task<DbConnection>>>(async () =>
     }
 });
 
-// Register MongoDB client based on the environment
+// Register MongoDB client using the Mongo connection string
 builder.Services.AddSingleton<IMongoClient>(sp =>
 {
     var logger = sp.GetRequiredService<ILogger<Program>>();
-    var configuration = sp.GetRequiredService<IConfiguration>();
-    var mongoConnectionString = configuration["MongoDb:ConnectionString"];
+    var connectionStringFunc = sp.GetKeyedService<Func<Task<string>>>("MongoConnectionString");
+    var mongoConnectionString = connectionStringFunc().GetAwaiter().GetResult();
+
     logger.LogInformation("Configuring MongoDB client.");
     telemetryClient.TrackEvent("ConfiguringMongoDbClient");
     return new MongoClient(mongoConnectionString);
@@ -162,10 +212,7 @@ app.MapRazorPages();
 app.MapHealthChecks("/health");
 
 // Example Minimal API endpoint
-app.MapGet("/api/status", () =>
-{
-    return Results.Ok(new { Status = "API is running" });
-});
+app.MapGet("/api/status", () => { return Results.Ok(new { Status = "API is running" }); });
 
 var cancellationTokenSource = new CancellationTokenSource();
 var cancellationToken = cancellationTokenSource.Token;
@@ -212,13 +259,14 @@ public class SqlServerHealthCheck : IHealthCheck
         _logger = logger;
     }
 
-    public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
+    public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context,
+        CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("Checking SQL Server health...");
 
         try
         {
-            using var connection = await _dbConnectionFunc();
+            await using var connection = await _dbConnectionFunc();
             return HealthCheckResult.Healthy("SQL Server is healthy");
         }
         catch (Exception ex)
