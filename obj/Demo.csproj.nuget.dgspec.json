@@ -44,17 +44,41 @@
         "net8.0": {
           "targetAlias": "net8.0",
           "dependencies": {
+            "AspNetCore.HealthChecks.MongoDb": {
+              "target": "Package",
+              "version": "[8.1.0, )"
+            },
             "Azure.Extensions.AspNetCore.Configuration.Secrets": {
               "target": "Package",
               "version": "[1.3.2, )"
+            },
+            "FluentValidation": {
+              "target": "Package",
+              "version": "[11.10.0, )"
             },
             "Microsoft.ApplicationInsights.AspNetCore": {
               "target": "Package",
               "version": "[2.22.0, )"
             },
+            "Microsoft.Data.SqlClient": {
+              "target": "Package",
+              "version": "[5.2.2, )"
+            },
+            "Microsoft.Extensions.Logging": {
+              "target": "Package",
+              "version": "[8.0.1, )"
+            },
             "Microsoft.Identity.Web": {
               "target": "Package",
               "version": "[3.2.1, )"
+            },
+            "MongoDbClient": {
+              "target": "Package",
+              "version": "[1.0.23, )"
+            },
+            "Polly": {
+              "target": "Package",
+              "version": "[8.4.2, )"
             },
             "Swashbuckle": {
               "target": "Package",
